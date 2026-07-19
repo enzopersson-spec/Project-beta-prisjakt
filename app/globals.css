@@ -1,0 +1,43 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg-app: #0f0f11;
+  --bg-sidebar: #16161a;
+  --bg-card: #1c1c21;
+  --bg-card-hover: #222228;
+  --border: rgba(255, 255, 255, 0.08);
+  --border-light: rgba(255, 255, 255, 0.14);
+  --text-primary: #f0f0f2;
+  --text-secondary: rgba(240, 240, 242, 0.55);
+  --text-muted: rgba(240, 240, 242, 0.3);
+  --accent: #f97316;
+  --accent-bg: rgba(249, 115, 22, 0.12);
+}
+
+body {
+  background: var(--bg-app);
+  color: var(--text-primary);
+}
+
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  border-radius: 99px;
+  background: rgba(255,255,255,0.12);
+  outline: none;
+  width: 100%;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #f97316;
+  border: 2px solid #0f0f11;
+  cursor: pointer;
+}
