@@ -405,27 +405,29 @@ async function flagUndervaluedDeals(): Promise<FlaggedDeal[]> {
   if (alreadyErr) throw alreadyErr;
   const flaggedIds = new Set((already ?? []).map((r) => r.listing_id));
 
-  const newDeals = candidates.filter((c) => !flaggedIds.has(c.listing_id));
-  if (newDeals.length === 0) return [];
+  return candidates.filter((c) => !flaggedIds.has(c.listing_id));
+}
 
-  const { error: insertErr } = await supabase.from("flagged_deals").insert(
-    newDeals.map((d) => ({
+// Skrivs bara efter att notifieringen (mejlet) faktiskt gått iväg, så att ett
+// mejlfel inte tyst begraver ett fynd för gott – nästa körning försöker då igen.
+async function markDealsNotified(deals: FlaggedDeal[]) {
+  const supabase = supabaseClient();
+  const { error } = await supabase.from("flagged_deals").insert(
+    deals.map((d) => ({
       listing_id: d.listing_id,
       group_median: d.group_median,
       comparable_count: d.comparable_count,
       deviation_pct: d.deviation_pct,
     }))
   );
-  if (insertErr) throw insertErr;
-
-  return newDeals;
+  if (error) throw error;
 }
 
-async function sendDealAlertEmail(deals: FlaggedDeal[]) {
+async function sendDealAlertEmail(deals: FlaggedDeal[]): Promise<boolean> {
   const apiKey = process.env.RESEND_API_KEY;
   if (!apiKey) {
     console.warn("RESEND_API_KEY saknas, hoppar över mejl.");
-    return;
+    return false;
   }
 
   const rows = deals
@@ -464,6 +466,7 @@ ${rows}
   });
   if (!res.ok) throw new Error(`Resend-utskick misslyckades: ${res.status} ${await res.text()}`);
   console.log(`Mejl skickat till ${EMAIL_TO} med ${deals.length} fynd.`);
+  return true;
 }
 
 async function main() {
@@ -476,10 +479,11 @@ async function main() {
   }
 
   const newDeals = await flagUndervaluedDeals();
-  console.log(`${newDeals.length} nya fynd flaggade.`);
+  console.log(`${newDeals.length} nya fynd hittade.`);
 
   if (newDeals.length > 0) {
-    await sendDealAlertEmail(newDeals);
+    const sent = await sendDealAlertEmail(newDeals);
+    if (sent) await markDealsNotified(newDeals);
   }
 }
 
