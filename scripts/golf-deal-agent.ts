@@ -1,8 +1,8 @@
 /**
- * Söker golfklubbor på Blocket/eBay/Facebook Marketplace, låter en Claude-agent
- * normalisera märke/modell/typ per annons, sparar allt i Supabase (golf_listings),
- * flaggar annonser som ligger >= GOLF_DEAL_THRESHOLD_PCT % under gruppens medianpris
- * (flagged_deals) och mejlar en sammanfattning via Resend.
+ * Söker golfklubbor på Blocket, låter en Claude-agent normalisera märke/modell/typ
+ * per annons, sparar allt i Supabase (golf_listings), flaggar annonser som ligger
+ * >= GOLF_DEAL_THRESHOLD_PCT % under gruppens medianpris (flagged_deals) och mejlar
+ * en sammanfattning via Resend.
  *
  * Körs med: npx tsx scripts/golf-deal-agent.ts
  *
@@ -13,11 +13,6 @@
  *   RESEND_API_KEY           (krävs för mejl, annars hoppas mejlsteget över)
  *   RESEND_FROM_EMAIL        default "Golf Deal Agent <onboarding@resend.dev>"
  *   GOLF_DEAL_EMAIL_TO       default "enzo.persson@hotmail.com"
- *   EBAY_CLIENT_ID / EBAY_CLIENT_SECRET  (krävs för eBay-sökning, annars hoppas den över)
- *   EBAY_MARKETPLACE_ID      default "EBAY_US"
- *   FB_STORAGE_STATE_JSON    valfri – Playwright storageState (cookies) för en inloggad
- *                             FB-session. Utan denna hoppas Facebook Marketplace över,
- *                             eftersom sökning där i praktiken kräver inloggning.
  *   GOLF_SEARCH_QUERIES      kommaseparerad lista, se DEFAULT_SEARCH_QUERIES
  *   GOLF_DEAL_THRESHOLD_PCT  default 25
  *   GOLF_MIN_GROUP_SIZE      default 3 (färre jämförbara annonser ger ingen median värd namnet)
@@ -28,13 +23,12 @@
 import { query, tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { createClient } from "@supabase/supabase-js";
-import { chromium } from "playwright";
 import { sokBlocket } from "../lib/scrapers/blocket";
 
 const CLUB_TYPES = ["driver", "fairway_wood", "hybrid", "irons", "wedge", "putter", "bag", "other"] as const;
 type ClubType = (typeof CLUB_TYPES)[number];
 type Currency = "SEK" | "USD" | "EUR" | "GBP";
-type Platform = "blocket" | "ebay" | "facebook";
+type Platform = "blocket";
 
 const DEFAULT_SEARCH_QUERIES = [
   "golfklubbor",
@@ -74,33 +68,6 @@ function supabaseClient() {
   return createClient(url, key);
 }
 
-// ---- eBay: officiell Browse API, OAuth med client credentials ----
-
-let ebayToken: { value: string; expiresAt: number } | null = null;
-
-async function getEbayToken(): Promise<string | null> {
-  const id = process.env.EBAY_CLIENT_ID;
-  const secret = process.env.EBAY_CLIENT_SECRET;
-  if (!id || !secret) return null;
-  if (ebayToken && ebayToken.expiresAt > Date.now()) return ebayToken.value;
-
-  const res = await fetch("https://api.ebay.com/identity/v1/oauth2/token", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-      Authorization: `Basic ${Buffer.from(`${id}:${secret}`).toString("base64")}`,
-    },
-    body: new URLSearchParams({
-      grant_type: "client_credentials",
-      scope: "https://api.ebay.com/oauth/api_scope",
-    }),
-  });
-  if (!res.ok) throw new Error(`eBay OAuth misslyckades: ${res.status} ${await res.text()}`);
-  const data = await res.json();
-  ebayToken = { value: data.access_token, expiresAt: Date.now() + (data.expires_in - 60) * 1000 };
-  return ebayToken.value;
-}
-
 interface RawCandidate {
   platform: Platform;
   listing_url: string;
@@ -108,30 +75,6 @@ interface RawCandidate {
   price?: number;
   currency?: Currency;
   condition?: string;
-  raw_text?: string;
-}
-
-async function searchEbayRaw(searchQuery: string): Promise<RawCandidate[]> {
-  const token = await getEbayToken();
-  if (!token) return [];
-  const marketplace = process.env.EBAY_MARKETPLACE_ID ?? "EBAY_US";
-  const url = `https://api.ebay.com/buy/browse/v1/item_summary/search?q=${encodeURIComponent(searchQuery)}&limit=25`;
-  const res = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "X-EBAY-C-MARKETPLACE-ID": marketplace,
-    },
-  });
-  if (!res.ok) throw new Error(`eBay-sökning misslyckades: ${res.status} ${await res.text()}`);
-  const data = await res.json();
-  return (data.itemSummaries ?? []).map((item: any) => ({
-    platform: "ebay" as const,
-    listing_url: item.itemWebUrl,
-    title: item.title,
-    price: item.price?.value ? Number(item.price.value) : undefined,
-    currency: item.price?.currency as Currency | undefined,
-    condition: item.condition,
-  }));
 }
 
 async function searchBlocketRaw(searchQuery: string): Promise<RawCandidate[]> {
@@ -148,59 +91,10 @@ async function searchBlocketRaw(searchQuery: string): Promise<RawCandidate[]> {
     }));
 }
 
-// Facebook Marketplace har inget officiellt API och sökresultat kräver i praktiken
-// en inloggad session. Vi bygger aldrig automatiserad inloggning (mot FB:s villkor) –
-// om användaren tillhandahåller en exporterad Playwright storageState (egna cookies)
-// gör vi ett bästa-försök, annars hoppar vi över källan helt utan att krascha körningen.
-// FB:s DOM använder obfuskerade klassnamn, så vi hämtar rå text och låter agenten
-// tolka titel/pris istället för att lita på spröda CSS-selektorer.
-async function searchFacebookRaw(searchQuery: string): Promise<RawCandidate[]> {
-  const storageStateJson = process.env.FB_STORAGE_STATE_JSON;
-  if (!storageStateJson) return [];
-
-  const browser = await chromium.launch({ headless: true });
-  try {
-    const context = await browser.newContext({
-      storageState: JSON.parse(storageStateJson),
-      userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-      locale: "sv-SE",
-    });
-    const page = await context.newPage();
-    await page.goto(`https://www.facebook.com/marketplace/search/?query=${encodeURIComponent(searchQuery)}`, {
-      waitUntil: "domcontentloaded",
-      timeout: 25000,
-    });
-    await page.waitForTimeout(3000);
-
-    const candidates = await page.evaluate(() => {
-      const anchors = Array.from(document.querySelectorAll('a[href*="/marketplace/item/"]'));
-      const seen = new Set<string>();
-      const out: { href: string; text: string }[] = [];
-      for (const a of anchors) {
-        const href = (a as HTMLAnchorElement).href.split("?")[0];
-        if (seen.has(href)) continue;
-        seen.add(href);
-        out.push({ href, text: (a as HTMLElement).innerText.replace(/\s+/g, " ").trim() });
-        if (out.length >= 20) break;
-      }
-      return out;
-    });
-
-    return candidates
-      .filter((c) => c.text.length > 0)
-      .map((c) => ({ platform: "facebook" as const, listing_url: c.href, raw_text: c.text }));
-  } catch (err) {
-    console.warn(`Facebook Marketplace-sökning misslyckades för "${searchQuery}":`, (err as Error).message);
-    return [];
-  } finally {
-    await browser.close();
-  }
-}
-
 // ---- Supabase-skrivning ----
 
 const NormalizedListing = z.object({
-  platform: z.enum(["blocket", "ebay", "facebook"]),
+  platform: z.enum(["blocket"]),
   listing_url: z.string().url(),
   title: z.string(),
   brand: z.string().nullable(),
@@ -245,30 +139,6 @@ const searchBlocketTool = tool(
   }
 );
 
-const searchEbayTool = tool(
-  "search_ebay",
-  "Sök golfklubbor på eBay via Browse API. Returnerar en JSON-lista med kandidatannonser (listing_url, title, price, currency, condition). Tom lista om EBAY_CLIENT_ID/SECRET saknas.",
-  { query: z.string().describe("Sökterm, t.ex. 'golf driver'") },
-  async ({ query: q }) => {
-    try {
-      const results = await searchEbayRaw(q);
-      return { content: [{ type: "text" as const, text: JSON.stringify(results) }] };
-    } catch (err) {
-      return { content: [{ type: "text" as const, text: `Fel vid eBay-sökning: ${(err as Error).message}` }] };
-    }
-  }
-);
-
-const searchFacebookTool = tool(
-  "search_facebook",
-  "Sök golfklubbor på Facebook Marketplace (bästa försök, kräver inloggad session). Returnerar en JSON-lista med kandidater där du själv måste tolka titel/pris/valuta ur raw_text, eftersom sidan saknar stabila selektorer. Tom lista om ingen session finns konfigurerad.",
-  { query: z.string().describe("Sökterm, t.ex. 'golf driver'") },
-  async ({ query: q }) => {
-    const results = await searchFacebookRaw(q);
-    return { content: [{ type: "text" as const, text: JSON.stringify(results) }] };
-  }
-);
-
 const saveListingsTool = tool(
   "save_listings",
   "Spara en batch normaliserade golfklubb-annonser i databasen. Skicka bara med annonser du är säker på faktiskt är golfklubbor. 'price' och 'currency' ska vara oförändrade värden du fick från sök-verktygen (ingen valutaomräkning behövs, det sköts av verktyget).",
@@ -288,7 +158,7 @@ const saveListingsTool = tool(
 const mcpServer = createSdkMcpServer({
   name: "golf-deals",
   version: "1.0.0",
-  tools: [searchBlocketTool, searchEbayTool, searchFacebookTool, saveListingsTool],
+  tools: [searchBlocketTool, saveListingsTool],
 });
 
 async function runSearchAgent() {
@@ -299,14 +169,13 @@ Sökfraser att gå igenom, en i taget:
 ${SEARCH_QUERIES.map((q) => `- ${q}`).join("\n")}
 
 För varje sökfras:
-1. Anropa search_blocket, search_ebay och search_facebook med sökfrasen.
+1. Anropa search_blocket med sökfrasen.
 2. Gå igenom kandidaterna. Hoppa över allt som uppenbart inte är en golfklubba (t.ex. golfskor, golfbollar, resor).
-   För Facebook-kandidater (fältet raw_text) måste du själv tolka ut titel, pris (nummer) och valuta (SEK/USD/EUR/GBP) ur texten.
 3. För varje golfklubb-annons: avgör brand (märke, t.ex. "Callaway", "TaylorMade", "Titleist", "Ping", "Mizuno"),
    model (specifik modell, t.ex. "Stealth 2", "Rogue ST Max", "T100") och club_type (ett av: ${clubTypeList}).
    Om märke eller modell inte går att avgöra med rimlig säkerhet, sätt brand/model till null istället för att gissa.
 4. Anropa save_listings med den normaliserade batchen för den sökfrasen. Låt price/currency vara exakt de värden
-   du fick från sök-verktyget (för Blocket/eBay), eller de du själv tolkade ut ur raw_text (för Facebook).
+   du fick från search_blocket.
 
 Svara till sist med en kort textsammanfattning (inga fler verktygsanrop) av hur många annonser du sparade totalt.`;
 
@@ -318,12 +187,7 @@ Svara till sist med en kort textsammanfattning (inga fler verktygsanrop) av hur 
       model: process.env.GOLF_AGENT_MODEL,
       maxTurns,
       permissionMode: "bypassPermissions",
-      allowedTools: [
-        "mcp__golf-deals__search_blocket",
-        "mcp__golf-deals__search_ebay",
-        "mcp__golf-deals__search_facebook",
-        "mcp__golf-deals__save_listings",
-      ],
+      allowedTools: ["mcp__golf-deals__search_blocket", "mcp__golf-deals__save_listings"],
       mcpServers: { "golf-deals": mcpServer },
       systemPrompt: "Du är en noggrann research-agent som bara använder de verktyg som erbjuds. Gissa aldrig märke/modell om du är osäker.",
     },
