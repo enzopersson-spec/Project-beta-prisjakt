@@ -53,6 +53,13 @@ const MAX_AGE_DAYS = Number(process.env.GOLF_LISTING_MAX_AGE_DAYS ?? 14);
 const EMAIL_TO = envOrDefault("GOLF_DEAL_EMAIL_TO", "enzo.persson@hotmail.com");
 const EMAIL_FROM = envOrDefault("RESEND_FROM_EMAIL", "Golf Deal Agent <onboarding@resend.dev>");
 
+// L.A.B. Golf-puttrar är ett av de mest kopierade märkena på andrahandsmarknaden,
+// så ett ovanligt lågt pris betyder oftare en fake än ett fynd. Flaggas därför aldrig.
+const EXCLUDED_BRANDS = (process.env.GOLF_EXCLUDED_BRANDS?.split(",").map((s) => s.trim()).filter(Boolean)) ?? [
+  "L.A.B. Golf",
+  "LAB Golf",
+];
+
 const CURRENCY_TO_SEK: Record<Currency, number> = {
   SEK: 1,
   USD: 10.8,
@@ -243,8 +250,11 @@ async function flagUndervaluedDeals(): Promise<FlaggedDeal[]> {
   if (error) throw error;
   if (!listings || listings.length === 0) return [];
 
+  const excludedBrands = new Set(EXCLUDED_BRANDS.map((b) => b.toLowerCase()));
+  const eligible = listings.filter((l) => !excludedBrands.has(l.brand!.trim().toLowerCase()));
+
   const groups = new Map<string, typeof listings>();
-  for (const l of listings) {
+  for (const l of eligible) {
     const key = `${l.brand!.trim().toLowerCase()}|${l.model!.trim().toLowerCase()}|${l.club_type!.trim().toLowerCase()}`;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key)!.push(l);
