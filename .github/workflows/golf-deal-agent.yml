@@ -2,7 +2,7 @@ name: Golf Deal Agent
 
 on:
   schedule:
-    - cron: "0 */3 * * *"
+    - cron: "0 6 * * *"
   workflow_dispatch: {}
 
 jobs:
@@ -24,6 +24,7 @@ jobs:
       - run: npm run golf-deal-agent
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GOLF_AGENT_MODEL: ${{ secrets.GOLF_AGENT_MODEL }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
