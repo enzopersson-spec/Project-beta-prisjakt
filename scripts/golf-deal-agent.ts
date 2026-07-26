@@ -39,12 +39,19 @@ const DEFAULT_SEARCH_QUERIES = [
   "golf hybrid",
 ];
 
+// GitHub Actions sätter env-variabeln till "" (inte undefined) när en refererad
+// secret inte finns i repot, så en vanlig ?? "" fallback fångar aldrig det fallet.
+function envOrDefault(name: string, fallback: string): string {
+  const value = process.env[name]?.trim();
+  return value ? value : fallback;
+}
+
 const SEARCH_QUERIES = (process.env.GOLF_SEARCH_QUERIES?.split(",").map((s) => s.trim()).filter(Boolean)) ?? DEFAULT_SEARCH_QUERIES;
 const DEAL_THRESHOLD_PCT = Number(process.env.GOLF_DEAL_THRESHOLD_PCT ?? 25);
 const MIN_GROUP_SIZE = Number(process.env.GOLF_MIN_GROUP_SIZE ?? 3);
 const MAX_AGE_DAYS = Number(process.env.GOLF_LISTING_MAX_AGE_DAYS ?? 14);
-const EMAIL_TO = process.env.GOLF_DEAL_EMAIL_TO ?? "enzo.persson@hotmail.com";
-const EMAIL_FROM = process.env.RESEND_FROM_EMAIL ?? "Golf Deal Agent <onboarding@resend.dev>";
+const EMAIL_TO = envOrDefault("GOLF_DEAL_EMAIL_TO", "enzo.persson@hotmail.com");
+const EMAIL_FROM = envOrDefault("RESEND_FROM_EMAIL", "Golf Deal Agent <onboarding@resend.dev>");
 
 const CURRENCY_TO_SEK: Record<Currency, number> = {
   SEK: 1,
@@ -184,7 +191,7 @@ Svara till sist med en kort textsammanfattning (inga fler verktygsanrop) av hur 
   for await (const message of query({
     prompt,
     options: {
-      model: process.env.GOLF_AGENT_MODEL,
+      model: process.env.GOLF_AGENT_MODEL?.trim() || undefined,
       maxTurns,
       permissionMode: "bypassPermissions",
       allowedTools: ["mcp__golf-deals__search_blocket", "mcp__golf-deals__save_listings"],
