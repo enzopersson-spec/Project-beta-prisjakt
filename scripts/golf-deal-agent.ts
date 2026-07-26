@@ -430,10 +430,20 @@ async function sendDealAlertEmail(deals: FlaggedDeal[]): Promise<boolean> {
     return false;
   }
 
-  const rows = deals
-    .map(
-      (d) =>
-        `<tr>
+  const subject =
+    deals.length > 0
+      ? `⛳ ${deals.length} golf-fynd minst ${DEAL_THRESHOLD_PCT}% under medianpris`
+      : `⛳ Golf Deal Agent – inga nya fynd denna körning`;
+
+  const html =
+    deals.length > 0
+      ? `<h2>${subject}</h2>
+<table border="1" cellpadding="6" cellspacing="0">
+<tr><th>Titel</th><th>Källa</th><th>Pris</th><th>Median</th><th>Avvikelse</th><th>Jämförbara</th><th>Länk</th></tr>
+${deals
+  .map(
+    (d) =>
+      `<tr>
           <td>${d.title}</td>
           <td>${d.platform}</td>
           <td>${d.price} kr</td>
@@ -442,14 +452,10 @@ async function sendDealAlertEmail(deals: FlaggedDeal[]): Promise<boolean> {
           <td>${d.comparable_count}</td>
           <td><a href="${d.listing_url}">Visa</a></td>
         </tr>`
-    )
-    .join("\n");
-
-  const html = `<h2>⛳ ${deals.length} golf-fynd minst ${DEAL_THRESHOLD_PCT}% under medianpris</h2>
-<table border="1" cellpadding="6" cellspacing="0">
-<tr><th>Titel</th><th>Källa</th><th>Pris</th><th>Median</th><th>Avvikelse</th><th>Jämförbara</th><th>Länk</th></tr>
-${rows}
-</table>`;
+  )
+  .join("\n")}
+</table>`
+      : `<h2>${subject}</h2><p>Sökningen kördes utan att hitta några nya fynd minst ${DEAL_THRESHOLD_PCT}% under gruppens medianpris.</p>`;
 
   const res = await fetch("https://api.resend.com/emails", {
     method: "POST",
@@ -460,7 +466,7 @@ ${rows}
     body: JSON.stringify({
       from: EMAIL_FROM,
       to: [EMAIL_TO],
-      subject: `⛳ ${deals.length} golf-fynd minst ${DEAL_THRESHOLD_PCT}% under medianpris`,
+      subject,
       html,
     }),
   });
@@ -481,10 +487,8 @@ async function main() {
   const newDeals = await flagUndervaluedDeals();
   console.log(`${newDeals.length} nya fynd hittade.`);
 
-  if (newDeals.length > 0) {
-    const sent = await sendDealAlertEmail(newDeals);
-    if (sent) await markDealsNotified(newDeals);
-  }
+  const sent = await sendDealAlertEmail(newDeals);
+  if (sent && newDeals.length > 0) await markDealsNotified(newDeals);
 }
 
 main().catch((err) => {
